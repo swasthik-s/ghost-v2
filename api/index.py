@@ -183,17 +183,17 @@ class JobFailureRequest(BaseModel):
     error: str = Field(min_length=1, max_length=2000)
 
 
-@app.get("/")
+@app.get("/api")
 def root() -> dict[str, Any]:
     return {"service": "GHOST v2 Cloud API", "version": "0.3.0", "mode": "telemetry-and-research-queue", "execution_enabled": False}
 
 
-@app.get("/v1/health")
+@app.get("/api/v1/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "database_configured": bool(os.getenv("GHOST_DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")), "execution_enabled": False}
 
 
-@app.post("/v1/auth/login")
+@app.post("/api/v1/auth/login")
 def login(body: LoginRequest, response: Response) -> dict[str, Any]:
     password = require_env("GHOST_DASHBOARD_PASSWORD")
     if not hmac.compare_digest(body.password, password):
@@ -211,18 +211,18 @@ def login(body: LoginRequest, response: Response) -> dict[str, Any]:
     return {"authenticated": True, "expires_in": SESSION_SECONDS}
 
 
-@app.get("/v1/auth/me")
+@app.get("/api/v1/auth/me")
 def auth_me(_: str = Depends(require_dashboard)) -> dict[str, bool]:
     return {"authenticated": True}
 
 
-@app.post("/v1/auth/logout")
+@app.post("/api/v1/auth/logout")
 def logout(response: Response, _: str = Depends(require_dashboard)) -> dict[str, bool]:
     response.delete_cookie(SESSION_COOKIE, path="/api/v1", httponly=True, secure=os.getenv("VERCEL") == "1", samesite="lax")
     return {"authenticated": False}
 
 
-@app.post("/v1/devices/pair")
+@app.post("/api/v1/devices/pair")
 def pair_device(body: PairRequest) -> dict[str, Any]:
     expected = require_env("GHOST_PAIRING_SECRET")
     if not hmac.compare_digest(body.pairing_code, expected):
@@ -237,7 +237,7 @@ def pair_device(body: PairRequest) -> dict[str, Any]:
     return {"device_id": str(row["id"]), "device_name": row["device_name"], "device_token": raw_token, "created_at": row["created_at"].isoformat(), "warning": "Copy this token now. It is shown only once."}
 
 
-@app.post("/v1/agent/heartbeat")
+@app.post("/api/v1/agent/heartbeat")
 def heartbeat(body: HeartbeatRequest, device: dict[str, Any] = Depends(require_device)) -> dict[str, Any]:
     with connect() as conn:
         conn.execute(
@@ -248,7 +248,7 @@ def heartbeat(body: HeartbeatRequest, device: dict[str, Any] = Depends(require_d
     return {"accepted": True, "server_time": datetime.now(timezone.utc).isoformat()}
 
 
-@app.post("/v1/telemetry/snapshot")
+@app.post("/api/v1/telemetry/snapshot")
 def ingest_snapshot(body: SnapshotRequest, device: dict[str, Any] = Depends(require_device)) -> dict[str, Any]:
     generated_at = parse_export_time(body.generated_at_utc)
     payload = body.model_dump(mode="json")
@@ -273,7 +273,7 @@ def ingest_snapshot(body: SnapshotRequest, device: dict[str, Any] = Depends(requ
     return {"accepted": True, "generated_at": generated_at.isoformat(), "position_count": len(body.positions), "execution_enabled": False}
 
 
-@app.get("/v1/dashboard/snapshot")
+@app.get("/api/v1/dashboard/snapshot")
 def dashboard_snapshot(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
@@ -301,7 +301,7 @@ def dashboard_snapshot(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     }
 
 
-@app.get("/v1/dashboard/equity")
+@app.get("/api/v1/dashboard/equity")
 def dashboard_equity(limit: int = 300, _: str = Depends(require_dashboard)) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 2000))
     with connect() as conn:
@@ -324,7 +324,7 @@ def dashboard_equity(limit: int = 300, _: str = Depends(require_dashboard)) -> d
     return {"count": len(items), "items": items}
 
 
-@app.get("/v1/dashboard/devices")
+@app.get("/api/v1/dashboard/devices")
 def dashboard_devices(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     with connect() as conn:
         rows = conn.execute(
@@ -342,7 +342,7 @@ def dashboard_devices(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     return {"items": items}
 
 
-@app.post("/v1/research/jobs")
+@app.post("/api/v1/research/jobs")
 def create_research_job(body: JobCreateRequest, _: str = Depends(require_dashboard)) -> dict[str, Any]:
     params = body.params
     if body.job_type != "PING":
@@ -363,7 +363,7 @@ def create_research_job(body: JobCreateRequest, _: str = Depends(require_dashboa
     return {"id": str(row["id"]), "job_type": row["job_type"], "params": row["params"], "status": row["status"], "created_at": row["created_at"].isoformat()}
 
 
-@app.get("/v1/research/jobs")
+@app.get("/api/v1/research/jobs")
 def list_research_jobs(limit: int = 30, _: str = Depends(require_dashboard)) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 100))
     with connect() as conn:
@@ -382,7 +382,7 @@ def list_research_jobs(limit: int = 30, _: str = Depends(require_dashboard)) -> 
     return {"items": items}
 
 
-@app.post("/v1/agent/jobs/claim")
+@app.post("/api/v1/agent/jobs/claim")
 def claim_job(device: dict[str, Any] = Depends(require_device)) -> dict[str, Any]:
     with connect() as conn:
         with conn.transaction():
@@ -405,7 +405,7 @@ def claim_job(device: dict[str, Any] = Depends(require_device)) -> dict[str, Any
     return {"job": {"id": str(job["id"]), "job_type": job["job_type"], "params": job["params"], "attempt": job["attempts"] + 1}}
 
 
-@app.post("/v1/agent/jobs/{job_id}/complete")
+@app.post("/api/v1/agent/jobs/{job_id}/complete")
 def complete_job(job_id: uuid.UUID, body: JobResultRequest, device: dict[str, Any] = Depends(require_device)) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
@@ -420,7 +420,7 @@ def complete_job(job_id: uuid.UUID, body: JobResultRequest, device: dict[str, An
     return {"accepted": True, "status": "succeeded"}
 
 
-@app.post("/v1/agent/jobs/{job_id}/fail")
+@app.post("/api/v1/agent/jobs/{job_id}/fail")
 def fail_job(job_id: uuid.UUID, body: JobFailureRequest, device: dict[str, Any] = Depends(require_device)) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
@@ -435,7 +435,7 @@ def fail_job(job_id: uuid.UUID, body: JobFailureRequest, device: dict[str, Any] 
     return {"accepted": True, "status": "failed"}
 
 
-@app.get("/v1/research/jobs/{job_id}")
+@app.get("/api/v1/research/jobs/{job_id}")
 def get_research_job(job_id: uuid.UUID, _: str = Depends(require_dashboard)) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
