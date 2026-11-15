@@ -54,7 +54,7 @@ NEXT_PUBLIC_GHOST_LOCAL_API_URL=http://127.0.0.1:8765
 
 Do not add this variable to Vercel. The hosted dashboard talks to the same-origin cloud API.
 
-## 4. Build the Windows executable
+## 5. Build and pair the Windows executable
 
 On the Windows build machine, from this directory:
 
@@ -78,7 +78,7 @@ Pair the target PC directly from the executable (it prompts securely for the pai
 
 Then run `GHOST-Agent.exe` normally and confirm the local health endpoint responds at `http://127.0.0.1:8765/health`.
 
-## 5. Job worker availability
+## 6. Job worker availability
 
 Agent 0.2.0 handles the `PING` diagnostic job. Backtest, sensitivity, walk-forward and Monte Carlo job types can be recorded in the cloud queue, but are not run by this agent release. They are failed with a clear unsupported-handler message until the research runner module is delivered.
 
