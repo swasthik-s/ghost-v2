@@ -58,3 +58,11 @@ PostgreSQL stores a typed allowlist of job kinds. Workers claim jobs using row l
 5. Implement the Python research job handlers using real historical data.
 6. Add sensitivity analysis, walk-forward and Monte Carlo.
 7. Cross-check against MT5 Strategy Tester and demo forward test.
+
+
+## Cloud device lifecycle
+
+- Device pairing uses a high-entropy pairing secret from server-side environment variables.
+- The Windows agent receives a high-entropy bearer token once; PostgreSQL stores only its SHA-256 digest.
+- The dashboard can list paired devices and revoke a device token. Revocation blocks subsequent agent requests.
+- Dashboard sessions are HMAC-signed, HTTP-only cookies with expiry and a random nonce; session secrets must be at least 32 characters.
