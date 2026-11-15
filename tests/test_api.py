@@ -1,4 +1,5 @@
 import os
+import secrets
 import time
 import unittest
 from datetime import timezone
@@ -17,6 +18,7 @@ class CloudApiContractTests(unittest.TestCase):
         self.assertIn("/api/v1/devices/pair", paths)
         self.assertIn("/api/v1/telemetry/snapshot", paths)
         self.assertIn("/api/v1/agent/jobs/claim", paths)
+        self.assertIn("/api/v1/dashboard/devices/{device_id}/revoke", paths)
 
     def test_health_is_read_only(self):
         result = index.health()
@@ -39,8 +41,18 @@ class CloudApiContractTests(unittest.TestCase):
     def test_expired_session_is_rejected(self):
         with patch.dict(os.environ, {"GHOST_SESSION_SECRET": "test-session-secret-long-enough-for-unit-test"}):
             expiry = str(int(time.time()) - 5)
-            token = expiry + "." + index.session_signature(expiry)
+            payload = expiry + "." + secrets.token_urlsafe(18)
+            token = payload + "." + index.session_signature(payload)
             self.assertFalse(index.valid_session(token))
+
+
+    def test_session_tokens_are_unique_even_within_the_same_second(self):
+        with patch.dict(os.environ, {"GHOST_SESSION_SECRET": "test-session-secret-long-enough-for-unit-test"}):
+            first = index.make_session()
+            second = index.make_session()
+            self.assertNotEqual(first, second)
+            self.assertTrue(index.valid_session(first))
+            self.assertTrue(index.valid_session(second))
 
     def test_mt5_export_timestamp_parses_as_utc(self):
         result = index.parse_export_time("2026.11.15 10:30:00")
