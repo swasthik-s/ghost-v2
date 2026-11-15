@@ -54,6 +54,24 @@ NEXT_PUBLIC_GHOST_LOCAL_API_URL=http://127.0.0.1:8765
 
 Do not add this variable to Vercel. The hosted dashboard talks to the same-origin cloud API.
 
+## 4. Build the Windows executable
+
+On the Windows build machine, from this directory:
+
+```powershell
+.\build_windows.ps1
+```
+
+The script creates an onedir package at:
+
+```text
+dist\GHOST-Agent\GHOST-Agent.exe
+```
+
+Keep the entire `dist\GHOST-Agent` folder together when moving it to the trading PC. The executable stores its SQLite data and pairing config under `%APPDATA%\GHOST`. Python does not need to be installed on the destination PC if you copy the complete onedir package, but MT5 must be installed and running.
+
+Run `GHOST-Agent.exe` manually once and confirm the local health endpoint responds at `http://127.0.0.1:8765/health`.
+
 ## 5. Job worker availability
 
 Agent 0.2.0 handles the `PING` diagnostic job. Backtest, sensitivity, walk-forward and Monte Carlo job types can be recorded in the cloud queue, but are not run by this agent release. They are failed with a clear unsupported-handler message until the research runner module is delivered.
