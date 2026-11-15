@@ -9,8 +9,14 @@ CREATE TABLE IF NOT EXISTS devices (
   agent_version TEXT,
   host_label TEXT,
   terminal_connected BOOLEAN NOT NULL DEFAULT FALSE,
-  mt5_build INTEGER
+  mt5_build INTEGER,
+  latest_payload JSONB,
+  latest_generated_at TIMESTAMPTZ,
+  latest_received_at TIMESTAMPTZ
 );
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_payload JSONB;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_generated_at TIMESTAMPTZ;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_received_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS telemetry_snapshots (
   id BIGSERIAL PRIMARY KEY,
