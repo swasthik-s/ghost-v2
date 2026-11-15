@@ -199,7 +199,25 @@ def root() -> dict[str, Any]:
 
 @app.get("/api/v1/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "database_configured": bool(os.getenv("GHOST_DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")), "execution_enabled": False}
+    configured = bool(os.getenv("GHOST_DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL"))
+    connected = False
+    database_error = None
+    if configured:
+        try:
+            with connect() as conn:
+                conn.execute("SELECT 1")
+            connected = True
+        except HTTPException as exc:
+            database_error = exc.detail
+    else:
+        database_error = "PostgreSQL environment variable is not configured."
+    return {
+        "status": "ok",
+        "database_configured": configured,
+        "database_connected": connected,
+        "database_error": database_error,
+        "execution_enabled": False,
+    }
 
 
 @app.post("/api/v1/auth/login")
