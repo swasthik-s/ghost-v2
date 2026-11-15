@@ -1,36 +1,95 @@
-# Deploy GHOST v2 to Vercel
+# GHOST v2 — Vercel Cloud Deployment
 
-## Import from GitHub
+The hosted application is a single Next.js + FastAPI project. The Next.js frontend and the FastAPI application in `api/index.py` are deployed from this repository. The local MT5 agent remains on your Windows machine.
 
-1. Open https://vercel.com/new and choose **Import Git Repository**.
-2. Select `swasthik-s/ghost-v2`.
-3. Keep the Root Directory as `./`.
-4. Framework Preset should be **Next.js**.
-5. Use the default build command `npm run build` and deploy.
+## 1. Connect PostgreSQL
 
-The frontend is a Next.js app. The small FastAPI scaffold is exposed separately as a Python Function from `api/index.py`; dependencies are declared in the repository-root `requirements.txt`. After deployment, check the Vercel runtime logs for the Python function.
+1. Open your Vercel project.
+2. Open **Storage / Marketplace** and add a PostgreSQL provider such as Neon or Supabase.
+3. Make sure the integration exposes one of `GHOST_DATABASE_URL`, `POSTGRES_URL` or `DATABASE_URL` to the Production environment.
+4. Open the provider's SQL editor and execute the complete contents of `api/schema.sql`.
 
-## Environment variables
+Vercel's legacy Vercel Postgres product is no longer offered for new projects; new Postgres databases are connected through Marketplace providers. See the [Vercel Postgres guidance](https://vercel.com/docs/postgres) and [Marketplace Storage](https://vercel.com/docs/marketplace-storage).
 
-The UI is currently configured to display demo/sample information. No secrets are required for the first deployment. Do not add broker passwords, MT5 credentials, API keys or account tokens to `NEXT_PUBLIC_*` variables.
+## 2. Set Vercel environment variables
 
-## Important system boundary
+In **Project → Settings → Environment Variables**, add the following to Production (and Preview too if you want preview deployments to use a separate test DB and secrets):
 
-Vercel hosts the web UI and small request/response API endpoints. It is not the MT5 terminal host. Keep the MT5 terminal, local execution agent and final risk governor on the Windows machine. The dashboard and Python API are not authorized to bypass the EA risk governor.
+| Variable | Purpose |
+|---|---|
+| `GHOST_DATABASE_URL` | Optional if the Marketplace provider injects `POSTGRES_URL` or `DATABASE_URL` |
+| `GHOST_DASHBOARD_PASSWORD` | Password for the private GHOST dashboard |
+| `GHOST_SESSION_SECRET` | Long random key for signing the 12-hour session cookie |
+| `GHOST_PAIRING_SECRET` | Long random code used only when pairing a Windows agent |
+| `GHOST_STALE_AFTER_SECONDS` | Optional; defaults to `10` |
 
-Heavy historical backtests, parameter sweeps, walk-forward analysis and Monte Carlo workloads should run in a dedicated research worker and be benchmarked against the chosen compute/runtime limits. The API currently returns `WAIT` and never authorizes an order.
+Generate two different secrets locally with:
 
-## Current implementation status
+```powershell
+py -c "import secrets; print(secrets.token_urlsafe(48))"
+py -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-- Next.js dashboard: scaffolded; figures are sample values only.
-- Browser code editor: Monaco-based, in-memory edits only; no filesystem persistence yet.
-- Python FastAPI: health and decision contract stubs only.
-- MT5 bridge: not implemented; no account connection or order execution.
-- MT5 source: safe placeholder only; compile and validate it with MetaEditor before any use.
+Use one for `GHOST_SESSION_SECRET` and another for `GHOST_PAIRING_SECRET`. Set a separate strong password for `GHOST_DASHBOARD_PASSWORD`. Never commit these values or put them in `NEXT_PUBLIC_*` variables.
 
+**Do not set `NEXT_PUBLIC_GHOST_LOCAL_API_URL` in Vercel.** That variable is only for local browser development against the Windows machine. The deployed dashboard uses the same-origin `/api/v1` endpoints and the private login screen.
 
-## Connecting the Vercel UI to the local MT5 data
+After connecting the database, applying the SQL schema and adding the variables, redeploy the project.
 
-The local bridge in `local_agent/` binds to `127.0.0.1` and is intentionally not exposed. The browser app can poll a configured API URL, but a Vercel deployment does not make the Windows PC reachable. Do not set the public Vercel variable to `http://127.0.0.1:8765` expecting it to reach the PC, and do not open the local port on the router.
+## 3. Smoke-test the cloud API
 
-For now, use local Next.js development to verify MT5 telemetry. A later remote deployment milestone must add a secure authenticated outbound agent channel and durable cloud storage before the Vercel app can receive account data.
+Open:
+
+- `https://YOUR-VERCEL-DOMAIN/api/v1/health`
+
+Expected response includes `"status":"ok"` and `"execution_enabled":false`. This health route does not require a database connection. The login screen should appear on the website root.
+
+Sign in using `GHOST_DASHBOARD_PASSWORD`.
+
+## 4. Pair the Windows GHOST Agent
+
+Download the repository ZIP or clone the repository. On the Windows machine with MT5, open PowerShell in `local_agent`:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+py pair.py --api-url https://YOUR-VERCEL-DOMAIN --device-name GHOST-MT5-PC
+```
+
+Enter the pairing code when prompted. The agent receives a random device token and stores it in:
+
+```text
+%APPDATA%\GHOST\agent.json
+```
+
+That file is a credential. Keep it private; do not commit it or share it. If it is exposed, revoke the device record in PostgreSQL and pair again.
+
+## 5. Start MT5 telemetry and the agent
+
+1. Copy `mt5/GHOST_Bridge_Exporter.mq5` to MT5's `MQL5/Experts/GHOST` folder.
+2. Compile it in MetaEditor and attach it to a chart.
+3. Start the local agent from `local_agent`:
+
+```powershell
+uvicorn main:app --host 127.0.0.1 --port 8765
+```
+
+The agent reads the exporter file from MT5 Common Files, stores a local SQLite history, sends snapshots and heartbeats to Vercel, and polls the cloud research queue. The local API binds to loopback only. Do not open port 8765 on your router or expose the MT5 terminal.
+
+When the cloud snapshot is fresh, the Vercel dashboard should change from sample/demo metrics to read-only MT5 account and position data.
+
+## 6. Job queue status in Agent 0.2.0
+
+The cloud queue supports `PING`, `BACKTEST`, `SENSITIVITY`, `WALK_FORWARD` and `MONTE_CARLO` job records.
+
+In this release, the Windows agent executes only `PING`. Other job types are accepted and queued but are returned as failed with an explicit “research executor not included” message. The backtest engine and validation runners are not implemented in this milestone. Do not interpret a queued job as a completed test.
+
+## Architecture and safety
+
+- Vercel Functions handle authenticated API requests; they are not a permanent MT5 process.
+- The Windows agent initiates outbound HTTPS requests. No inbound tunnel is required.
+- The agent credential is stored hashed in PostgreSQL; the raw token is stored only in the Windows agent config after pairing.
+- Dashboard sessions are signed, HTTP-only cookies with a 12-hour lifetime.
+- Telemetry and job APIs are separate from broker execution.
+- No cloud endpoint places, modifies or closes trades. Live order execution remains out of scope.
