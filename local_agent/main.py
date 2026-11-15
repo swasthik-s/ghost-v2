@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sqlite3
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+STALE_AFTER_SECONDS = float(os.getenv("GHOST_STALE_AFTER_SECONDS", "10"))
+ROOT = Path(__file__).resolve().parent
+DB_PATH = Path(os.getenv("GHOST_DB_PATH", str(ROOT / "data" / "ghost_local.db")))
+DEFAULT_COMMON = Path(os.getenv(
+    "APPDATA",
+    str(Path.home() / "AppData" / "Roaming"),
+)) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+COMMON_FILES_DIR = Path(os.getenv("MT5_COMMON_FILES_DIR", str(DEFAULT_COMMON)))
+SNAPSHOT_PATH = COMMON_FILES_DIR / "GHOST" / "telemetry.json"
+
+cache: dict[str, Any] = {"payload": None, "mtime": None, "read_error": None}
+
+
+def db_connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with db_connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS equity_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                captured_at REAL NOT NULL,
+                file_mtime REAL NOT NULL UNIQUE,
+                balance REAL NOT NULL,
+                equity REAL NOT NULL,
+                floating_pnl REAL NOT NULL,
+                margin REAL NOT NULL,
+                free_margin REAL NOT NULL,
+                margin_level REAL NOT NULL,
+                currency TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_equity_time ON equity_snapshots(captured_at)")
+
+
+def read_export() -> tuple[dict[str, Any] | None, float | None, str | None]:
+    try:
+        stat = SNAPSHOT_PATH.stat()
+        raw = SNAPSHOT_PATH.read_text(encoding="utf-8-sig")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("Unsupported telemetry schema; expected schema_version=1")
+        account = payload.get("account")
+        positions = payload.get("positions")
+        if not isinstance(account, dict) or not isinstance(positions, list):
+            raise ValueError("Telemetry is missing account or positions data")
+        required = ("balance", "equity", "floating_pnl", "margin", "free_margin", "margin_level")
+        for key in required:
+            if not isinstance(account.get(key), (int, float)):
+                raise ValueError(f"Invalid account field: {key}")
+        return payload, stat.st_mtime, None
+    except FileNotFoundError:
+        return None, None, "Waiting for MT5 exporter file"
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return None, None, str(exc)
+
+
+def save_equity(payload: dict[str, Any], mtime: float) -> None:
+    account = payload["account"]
+    with db_connect() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO equity_snapshots
+            (captured_at,file_mtime,balance,equity,floating_pnl,margin,free_margin,margin_level,currency)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (
+            mtime, mtime, float(account["balance"]), float(account["equity"]),
+            float(account["floating_pnl"]), float(account["margin"]),
+            float(account["free_margin"]), float(account["margin_level"]),
+            str(account.get("currency", "USD"))[:8],
+        ))
+
+
+async def telemetry_worker() -> None:
+    while True:
+        payload, mtime, error = await asyncio.to_thread(read_export)
+        if payload is not None and mtime is not None:
+            old_mtime = cache.get("mtime")
+            cache.update(payload=payload, mtime=mtime, read_error=None)
+            if old_mtime is None or mtime > float(old_mtime):
+                await asyncio.to_thread(save_equity, payload, mtime)
+        elif error:
+            # Keep the last known payload for diagnostics; age determines connectivity.
+            cache["read_error"] = error
+        await asyncio.sleep(1)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    task = asyncio.create_task(telemetry_worker())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(
+    title="GHOST Local Bridge",
+    version="0.2.0",
+    description="Local read-only MT5 telemetry bridge. It cannot submit or modify orders.",
+    lifespan=lifespan,
+)
+
+origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+extra_origin = os.getenv("GHOST_DASHBOARD_ORIGIN")
+if extra_origin:
+    origins.append(extra_origin.rstrip("/"))
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["Content-Type"],
+)
+
+
+def snapshot_response() -> dict[str, Any]:
+    payload = cache.get("payload")
+    mtime = cache.get("mtime")
+    age = max(0.0, time.time() - float(mtime)) if mtime is not None else None
+    fresh = age is not None and age <= STALE_AFTER_SECONDS
+    terminal = (payload or {}).get("terminal", {})
+    return {
+        "connected": bool(fresh and terminal.get("connected", False)),
+        "data_source": "MT5_COMMON_FILES" if payload else "NONE",
+        "age_seconds": round(age, 2) if age is not None else None,
+        "stale_after_seconds": STALE_AFTER_SECONDS,
+        "last_update": (payload or {}).get("generated_at_utc"),
+        "account": (payload or {}).get("account"),
+        "positions": (payload or {}).get("positions", []),
+        "terminal": terminal,
+        "execution_enabled": False,
+        "read_error": cache.get("read_error"),
+    }
+
+
+@app.get("/")
+def root() -> dict[str, Any]:
+    return {"service": "GHOST Local Bridge", "version": "0.2.0", "mode": "read-only"}
+
+
+@app.get("/health")
+@app.get("/api/v1/health")
+def health() -> dict[str, Any]:
+    result = snapshot_response()
+    return {
+        "status": "ok",
+        "mt5_connected": result["connected"],
+        "age_seconds": result["age_seconds"],
+        "execution_enabled": False,
+    }
+
+
+@app.get("/api/v1/snapshot")
+def get_snapshot() -> dict[str, Any]:
+    return snapshot_response()
+
+
+@app.get("/api/v1/equity")
+def get_equity(limit: int = 300) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, 2000))
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT captured_at,balance,equity,floating_pnl,currency "
+            "FROM equity_snapshots ORDER BY captured_at DESC LIMIT ?",
+            (safe_limit,),
+        ).fetchall()
+    records = [dict(row) for row in reversed(rows)]
+    return {"count": len(records), "items": records}
+
+
+@app.get("/api/v1/config")
+def get_config() -> dict[str, Any]:
+    return {
+        "mode": "read-only",
+        "execution_enabled": False,
+        "stale_after_seconds": STALE_AFTER_SECONDS,
+        "snapshot_file": str(SNAPSHOT_PATH),
+        "database_file": str(DB_PATH),
+    }
