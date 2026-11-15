@@ -52,24 +52,33 @@ def require_env(name: str) -> str:
     return value
 
 
-def session_signature(expiry: str) -> str:
-    secret = require_env("GHOST_SESSION_SECRET").encode("utf-8")
-    return hmac.new(secret, expiry.encode("ascii"), hashlib.sha256).hexdigest()
+def session_signature(payload: str) -> str:
+    secret_value = require_env("GHOST_SESSION_SECRET")
+    if len(secret_value) < 32:
+        raise HTTPException(status_code=503, detail="GHOST_SESSION_SECRET must contain at least 32 characters.")
+    secret = secret_value.encode("utf-8")
+    return hmac.new(secret, payload.encode("ascii"), hashlib.sha256).hexdigest()
 
 
 def make_session() -> str:
     expiry = str(int(time.time()) + SESSION_SECONDS)
-    return expiry + "." + session_signature(expiry)
+    nonce = secrets.token_urlsafe(18)
+    payload = expiry + "." + nonce
+    return payload + "." + session_signature(payload)
 
 
 def valid_session(token: str | None) -> bool:
     if not token or "." not in token:
         return False
-    expiry, signature = token.split(".", 1)
-    if not expiry.isdigit() or int(expiry) < int(time.time()):
+    try:
+        payload, signature = token.rsplit(".", 1)
+        expiry, nonce = payload.split(".", 1)
+    except ValueError:
+        return False
+    if not expiry.isdigit() or len(nonce) < 16 or int(expiry) < int(time.time()):
         return False
     try:
-        expected = session_signature(expiry)
+        expected = session_signature(payload)
     except HTTPException:
         return False
     return hmac.compare_digest(signature, expected)
@@ -225,6 +234,8 @@ def logout(response: Response, _: str = Depends(require_dashboard)) -> dict[str,
 @app.post("/api/v1/devices/pair")
 def pair_device(body: PairRequest) -> dict[str, Any]:
     expected = require_env("GHOST_PAIRING_SECRET")
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="GHOST_PAIRING_SECRET must contain at least 32 characters.")
     if not hmac.compare_digest(body.pairing_code, expected):
         raise HTTPException(status_code=401, detail="Invalid pairing code.")
     raw_token = secrets.token_urlsafe(48)
@@ -340,6 +351,22 @@ def dashboard_equity(limit: int = 300, _: str = Depends(require_dashboard)) -> d
             if hasattr(value, "as_tuple"):
                 item[key] = float(value)
     return {"count": len(items), "items": items}
+
+
+
+@app.post("/api/v1/dashboard/devices/{device_id}/revoke")
+def revoke_dashboard_device(device_id: uuid.UUID, _: str = Depends(require_dashboard)) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute(
+            "UPDATE devices SET revoked_at=now() WHERE id=%s AND revoked_at IS NULL RETURNING id",
+            (device_id,),
+        ).fetchone()
+        if not row:
+            exists = conn.execute("SELECT id FROM devices WHERE id=%s", (device_id,)).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Device not found.")
+            return {"revoked": True, "already_revoked": True, "device_id": str(device_id)}
+    return {"revoked": True, "already_revoked": False, "device_id": str(device_id)}
 
 
 @app.get("/api/v1/dashboard/devices")
