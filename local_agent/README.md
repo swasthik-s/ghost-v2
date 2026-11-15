@@ -99,3 +99,31 @@ Keep MT5 itself configured to start with Windows and remain logged in. Do not ru
 - No trade execution API or remote shell-command facility.
 - No router port forwarding.
 - Revoke the device token if `agent.json` is lost or exposed.
+
+
+## Build a Windows executable and install automatic startup
+
+From PowerShell in the `local_agent` directory:
+
+```powershell
+.\build_windows.ps1
+.\install_startup.ps1
+```
+
+The build creates `dist\GHOST-Agent\GHOST-Agent.exe`. The installer copies the complete one-directory bundle to:
+
+```text
+%LOCALAPPDATA%\Programs\GHOST-Agent
+```
+
+It registers a Windows Task Scheduler task named **GHOST Agent**, starts it immediately, and launches it again at the next user logon. Task Scheduler is configured to restart the process if it exits. The task runs as the signed-in user because MT5 Common Files and its terminal session belong to that user.
+
+To remove the startup task and installed program:
+
+```powershell
+.\uninstall_startup.ps1
+```
+
+The uninstall script preserves `%APPDATA%\GHOST\agent.json` so removing the program does not silently erase the device credential. To unpair as well, remove that file and revoke the device in the GHOST dashboard.
+
+The installer does not install or start MT5. Keep MT5 running with the separate read-only exporter EA attached to a chart. The agent waits without trading if the exporter file or cloud connection is unavailable.
