@@ -25,7 +25,9 @@ type BridgeSnapshot = {
   positions:BridgePosition[]; terminal?:{connected:boolean;company?:string;server?:string;build?:number};
   execution_enabled:false; read_error?:string|null;
 };
-const API_BASE = process.env.NEXT_PUBLIC_GHOST_API_URL || '';
+const API_BASE = process.env.NEXT_PUBLIC_GHOST_LOCAL_API_URL || '';
+const CLOUD_MODE = !API_BASE;
+const apiUrl = (path:string) => API_BASE ? `${API_BASE.replace(/\/$/,'')}${path}` : path;
 const fmtMoney = (value:number, currency:string) => new Intl.NumberFormat('en-US',{style:'currency',currency:currency||'USD',maximumFractionDigits:2}).format(value);
 
 const nav: {group:string;items:{label:Page;icon:typeof Activity}[]}[] = [
@@ -114,27 +116,46 @@ export default function Home() {
   const [output,setOutput]=useState('Workspace ready. Demo values only. Connect the local GHOST agent to enable persistence and research jobs.');
   const [notice,setNotice]=useState(true);
   const [range,setRange]=useState('1M');
+  const [authReady,setAuthReady]=useState(!CLOUD_MODE);
+  const [authenticated,setAuthenticated]=useState(!CLOUD_MODE);
+  const [authPassword,setAuthPassword]=useState('');
+  const [authError,setAuthError]=useState('');
+  const [authBusy,setAuthBusy]=useState(false);
+  const [jobs,setJobs]=useState<any[]>([]);
+  const [jobBusy,setJobBusy]=useState(false);
+  const [jobMessage,setJobMessage]=useState('');
   const [refreshNonce,setRefreshNonce]=useState(0);
   const [bridge,setBridge]=useState<BridgeSnapshot>({connected:false,data_source:'NONE',age_seconds:null,stale_after_seconds:10,last_update:null,positions:[],execution_enabled:false});
   const [liveEquity,setLiveEquity]=useState<{captured_at:number;equity:number;balance:number}[]>([]);
   useEffect(()=>{
-    if(!API_BASE) return;
+    if(!CLOUD_MODE) return;
+    let active=true;
+    fetch(apiUrl('/api/v1/auth/me'),{cache:'no-store',credentials:'same-origin'})
+      .then(response=>{if(active)setAuthenticated(response.ok);})
+      .catch(()=>{if(active)setAuthenticated(false);})
+      .finally(()=>{if(active)setAuthReady(true);});
+    return()=>{active=false;};
+  },[]);
+  useEffect(()=>{
+    if(CLOUD_MODE && !authenticated) return;
     let active=true;
     const poll=async()=>{
       try{
-        const response=await fetch(`${API_BASE.replace(/\/$/,'')}/api/v1/snapshot`,{cache:'no-store'});
+        const snapshotPath=CLOUD_MODE?'/api/v1/dashboard/snapshot':'/api/v1/snapshot';
+        const historyPath=CLOUD_MODE?'/api/v1/dashboard/equity?limit=300':'/api/v1/equity?limit=300';
+        const response=await fetch(apiUrl(snapshotPath),{cache:'no-store',credentials:'same-origin'});
         if(!response.ok) throw new Error(`Bridge HTTP ${response.status}`);
         const data=await response.json() as BridgeSnapshot;
         if(active) setBridge(data);
         if(data.connected){
           try{
-            const history=await fetch(`${API_BASE.replace(/\/$/,'')}/api/v1/equity?limit=300`,{cache:'no-store'});
+            const history=await fetch(apiUrl(historyPath),{cache:'no-store',credentials:'same-origin'});
             if(history.ok){
               const body=await history.json();
               if(active) setLiveEquity(Array.isArray(body.items)?body.items:[]);
             }
           }catch{/* Snapshot connectivity is independent from chart history. */}
-        }
+        }else if(active){setLiveEquity([]);}
       }catch{
         if(active) setBridge(prev=>({...prev,connected:false}));
       }
@@ -142,7 +163,20 @@ export default function Home() {
     void poll();
     const timer=window.setInterval(()=>void poll(),3000);
     return()=>{active=false;window.clearInterval(timer);};
-  },[refreshNonce]);
+  },[refreshNonce,authenticated]);
+  useEffect(()=>{
+    if(!CLOUD_MODE || !authenticated) return;
+    let active=true;
+    const load=async()=>{
+      try{
+        const response=await fetch(apiUrl('/api/v1/research/jobs?limit=20'),{cache:'no-store',credentials:'same-origin'});
+        if(response.ok){const data=await response.json();if(active)setJobs(Array.isArray(data.items)?data.items:[]);}
+      }catch{/* Keep the latest successful job list visible. */}
+    };
+    void load();
+    const timer=window.setInterval(()=>void load(),5000);
+    return()=>{active=false;window.clearInterval(timer);};
+  },[authenticated]);
   const code=file==='python'?pythonCode:mqlCode;
   const setCode=file==='python'?setPythonCode:setMqlCode;
   const chart=useMemo(()=>{
@@ -151,6 +185,35 @@ export default function Home() {
   },[bridge.connected,liveEquity]);
   const title=view==='Overview'?'Trading overview':view;
   const say=(s:string)=>setOutput(s);
+  const login=async(event:React.FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();setAuthBusy(true);setAuthError('');
+    try{
+      const response=await fetch(apiUrl('/api/v1/auth/login'),{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({password:authPassword})});
+      if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'Login failed.');}
+      setAuthenticated(true);setAuthPassword('');
+    }catch(error){setAuthError(error instanceof Error?error.message:'Unable to sign in.');}
+    finally{setAuthBusy(false);}
+  };
+  const logout=async()=>{
+    try{await fetch(apiUrl('/api/v1/auth/logout'),{method:'POST',credentials:'same-origin'});}catch{/* Session will expire server-side. */}
+    setAuthenticated(false);setAuthReady(true);
+  };
+  const queueJob=async(jobType:string,params:Record<string,unknown>)=>{
+    if(!CLOUD_MODE){setJobMessage('Cloud job queue is available from the Vercel dashboard, not the local-only dashboard.');return;}
+    setJobBusy(true);setJobMessage('');
+    try{
+      const response=await fetch(apiUrl('/api/v1/research/jobs'),{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({job_type:jobType,params})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||'Could not queue job.');
+      setJobMessage(`Job ${data.id} created · ${data.status.toUpperCase()}`);
+      const list=await fetch(apiUrl('/api/v1/research/jobs?limit=20'),{cache:'no-store',credentials:'same-origin'});
+      if(list.ok){const body=await list.json();setJobs(Array.isArray(body.items)?body.items:[]);}
+    }catch(error){setJobMessage(error instanceof Error?error.message:'Job request failed.');}
+    finally{setJobBusy(false);}
+  };
+
+  if(CLOUD_MODE && !authReady) return <div className="auth-screen"><div className="auth-card"><div className="brand-icon"><Bot size={22}/></div><h1>GHOST V2</h1><p>Checking secure session…</p></div></div>;
+  if(CLOUD_MODE && !authenticated) return <div className="auth-screen"><form className="auth-card" onSubmit={login}><div className="brand-icon"><Bot size={22}/></div><small>PRIVATE TRADING WORKSPACE</small><h1>GHOST V2</h1><p>Sign in to access your trading dashboard and research jobs.</p><label>Dashboard password<input type="password" autoComplete="current-password" value={authPassword} onChange={event=>setAuthPassword(event.target.value)} required autoFocus/></label>{authError&&<div className="auth-error">{authError}</div>}<button className="btn primary" type="submit" disabled={authBusy}>{authBusy?'Signing in…':'Sign in'}</button><span>Session expires after 12 hours.</span></form></div>;
 
   return <div className="shell">
     <aside className={`sidebar ${mobile?'open':''}`}>
@@ -161,7 +224,7 @@ export default function Home() {
     </aside>
     {mobile&&<button className="scrim" aria-label="Close menu" onClick={()=>setMobile(false)}/>}
     <main className="main">
-      <header className="topbar"><div className="crumb"><button className="mobile-menu" onClick={()=>setMobile(true)}><Menu size={18}/></button>GHOST <span>/</span> {title.toUpperCase()}</div><div className="top-actions"><span className="demo"><i/> {bridge.connected?'MT5 FEED CONNECTED':'DEMO ENVIRONMENT'}</span><button title="Search"><Search size={17}/></button><button title="Notifications" onClick={()=>setView('Alerts')}><Bell size={17}/></button><span className="avatar">S</span></div></header>
+      <header className="topbar"><div className="crumb"><button className="mobile-menu" onClick={()=>setMobile(true)}><Menu size={18}/></button>GHOST <span>/</span> {title.toUpperCase()}</div><div className="top-actions"><span className="demo"><i/> {bridge.connected?'MT5 FEED CONNECTED':'DEMO ENVIRONMENT'}</span><button title="Search"><Search size={17}/></button><button title="Notifications" onClick={()=>setView('Alerts')}><Bell size={17}/></button>{CLOUD_MODE&&<button title="Sign out" onClick={logout}><LockKeyhole size={16}/></button>}<span className="avatar">S</span></div></header>
       <div className="content">
         <div className="heading"><div><small>CONTROL CENTER / {view.toUpperCase()}</small><h1>{title}</h1><p>Account performance, execution activity and system health in one place.</p></div><div className="head-buttons"><Pill tone={bridge.connected?'green':'warn'}>{bridge.connected?'MT5 TELEMETRY':'SAMPLE METRICS'}</Pill><button className="btn" onClick={()=>{setNotice(true);setRefreshNonce(v=>v+1)}}><RefreshCw size={14}/> Refresh</button></div></div>
         {notice&&<div className="notice"><AlertTriangle size={15}/><b>{bridge.connected?'READ-ONLY MT5 TELEMETRY':'DEMO DATA · MT5 NOT CONNECTED'}</b><span>{bridge.connected?'Account and position metrics are sourced from the local MT5 exporter. Order execution is disabled.':'Numbers shown are illustrative, not broker account data. Configure the local Python bridge to connect MT5.'}</span><button onClick={()=>setNotice(false)}><X size={14}/></button></div>}
@@ -177,10 +240,10 @@ export default function Home() {
         {view==='Exposure'&&<Panel title="EXPOSURE MONITOR" subtitle={bridge.connected?"Current open positions from MT5":"Sample exposure · MT5 not connected"}><div className="table-wrap"><table><thead><tr><th>SYMBOL</th><th>DIRECTION</th><th>VOLUME</th><th>OPEN P&L</th><th>MAGIC / COMMENT</th><th>STATE</th></tr></thead><tbody>{bridge.connected?bridge.positions.map(p=><tr key={p.ticket}><td>{p.symbol}</td><td>{p.side}</td><td>{p.volume.toFixed(2)}</td><td className={(p.profit+p.swap)>=0?'positive':'negative'}>{fmtMoney(p.profit+p.swap,bridge.account?.currency||'USD')}</td><td className="mono">{p.magic} / {p.comment||'—'}</td><td><Pill tone="green">MT5</Pill></td></tr>):trades.slice(0,2).map((t,i)=><tr key={i}><td>{t.symbol}</td><td>{t.side}</td><td>{t.lots}</td><td className={t.pnl.startsWith('-')?'negative':'positive'}>{t.pnl}</td><td className="mono">{t.strategy}</td><td><Pill tone="warn">SAMPLE</Pill></td></tr>)}</tbody></table></div>{bridge.connected&&bridge.positions.length===0&&<p className="muted small">No open positions reported by the MT5 exporter.</p>}</Panel>}
         {view==='Alerts'&&<Panel title="RISK & SYSTEM ALERTS" subtitle="Current system notifications">{!bridge.connected&&<div className="alert-row"><AlertTriangle/><div><b>MT5 bridge is not connected</b><small>Dashboard is running in sample mode; no broker data is available.</small></div><Pill tone="warn">WARNING</Pill></div>}{bridge.connected&&<div className="alert-row"><Activity/><div><b>MT5 telemetry connected</b><small>Read-only snapshot received {bridge.age_seconds??0} seconds ago. Order execution remains disabled.</small></div><Pill tone="green">ONLINE</Pill></div>}<div className="alert-row"><Activity/><div><b>Risk telemetry incomplete</b><small>Daily loss, equity high-water drawdown and EA governor state are not yet exported.</small></div><Pill tone="warn">INFO</Pill></div><div className="alert-row"><Database/><div><b>Research history</b><small>Equity snapshots are stored locally in SQLite; trade/deal history export is still pending.</small></div><Pill tone="blue">INFO</Pill></div></Panel>}
         {view==='Strategies'&&<div className="strategy-grid">{strategies.map(s=><article className="strategy" key={s.key}><div className="strategy-top"><span className="strategy-icon"><Zap size={18}/></span><Pill tone={s.status==='READY'?'green':s.status==='EXPERIMENTAL'?'violet':'neutral'}>{s.status}</Pill></div><h3>{s.name}</h3><p>{s.desc}</p><div className="strategy-stats"><div><small>TRADES</small><b>{s.trades}</b></div><div><small>PROFIT FACTOR</small><b>{s.pf}</b></div><div><small>RISK / TRADE</small><b>{s.risk}</b></div></div><button className={strategy===s.key?'btn primary':'btn'} onClick={()=>{setStrategy(s.key);say(`${s.name} selected. Trading remains disabled until MT5 connection and risk checks are implemented.`)}}>{strategy===s.key?'SELECTED':'SELECT STRATEGY'}</button></article>)}</div>}
-        {view==='Backtests'&&<><div className="metrics three"><Metric title="LAST TEST" value="SNIPER V0.1" sub="XAUUSD · M5" icon={FlaskConical}/><Metric title="NET PROFIT" value="+$84.11" sub="On $10,000 start" icon={CircleDollarSign} tone="green"/><Metric title="PROFIT FACTOR" value="1.45" sub="60 trades · small sample" icon={ChartNoAxesCombined} tone="violet"/></div><Panel title="BACKTEST RUNNER" subtitle="Prepared for the local Python research worker"><div className="form-grid"><label>Strategy<select value={strategy} onChange={e=>setStrategy(e.target.value)}>{strategies.map(s=><option key={s.key} value={s.key}>{s.name}</option>)}</select></label><label>Symbol<select defaultValue="XAUUSD"><option>XAUUSD</option></select></label><label>Timeframe<select defaultValue="M5"><option>M5</option><option>M15</option><option>H1</option></select></label><label>Initial capital<input defaultValue="10000"/></label></div><button className="btn primary" onClick={()=>say('Backtest request prepared. A local Python worker and imported historical data are required to run it.') }><Play size={14}/> Prepare backtest</button></Panel></>}
-        {view==='Validation Lab'&&<div className="validation-grid">{[['Sensitivity Analysis','Parameter neighbourhoods, stability plateaus and fragile optimum detection.'],['Walk-Forward Analysis','Rolling calibration and strictly unseen out-of-sample evaluation.'],['Monte Carlo Simulation','Trade-sequence bootstrap, cost stress and drawdown breach probabilities.']].map(x=><article className="strategy" key={x[0]}><FlaskConical/><h3>{x[0]}</h3><p>{x[1]}</p><Pill tone="blue">PLANNED</Pill></article>)}</div>}
+        {view==='Backtests'&&<><Panel title="BACKTEST JOB SUBMISSION" subtitle="Jobs are stored in PostgreSQL and claimed by your paired Windows GHOST Agent. The backtest executor is a separate next milestone."><div className="form-grid"><label>Strategy<select value={strategy} onChange={e=>setStrategy(e.target.value)}>{strategies.map(s=><option key={s.key} value={s.key}>{s.name}</option>)}</select></label><label>Symbol<select id="job-symbol" defaultValue="XAUUSD"><option>XAUUSD</option><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option></select></label><label>Timeframe<select id="job-timeframe" defaultValue="M5"><option>M1</option><option>M5</option><option>M15</option><option>H1</option><option>H4</option></select></label><label>Initial capital<input id="job-capital" defaultValue="10000"/></label></div><button className="btn primary" disabled={jobBusy||!CLOUD_MODE} onClick={()=>{const symbol=(document.getElementById('job-symbol') as HTMLSelectElement)?.value||'XAUUSD';const timeframe=(document.getElementById('job-timeframe') as HTMLSelectElement)?.value||'M5';const initialBalance=Number((document.getElementById('job-capital') as HTMLInputElement)?.value||10000);void queueJob('BACKTEST',{strategy,symbol,timeframe,initial_balance:initialBalance});}}><Play size={14}/>{jobBusy?'Submitting…':'Queue backtest job'}</button>{!CLOUD_MODE&&<p className="muted small">Use the deployed Vercel dashboard to submit cloud jobs.</p>}{jobMessage&&<p className="job-message">{jobMessage}</p>}</Panel><Panel title="RESEARCH JOB QUEUE" subtitle="Latest jobs · refreshes every 5 seconds"><div className="table-wrap"><table><thead><tr><th>CREATED</th><th>TYPE</th><th>STATUS</th><th>ATTEMPTS</th><th>DETAIL</th></tr></thead><tbody>{jobs.map(job=><tr key={job.id}><td className="mono muted">{job.created_at?new Date(job.created_at).toLocaleString():''}</td><td className="mono">{job.job_type}</td><td><Pill tone={job.status==='succeeded'?'green':job.status==='failed'?'red':job.status==='running'?'blue':'warn'}>{job.status.toUpperCase()}</Pill></td><td>{job.attempts}</td><td className="muted">{job.error||job.id}</td></tr>)}{jobs.length===0&&<tr><td colSpan={5} className="muted">No jobs submitted yet.</td></tr>}</tbody></table></div></Panel></>}
+{view==='Validation Lab'&&<div className="validation-grid">{[['Sensitivity Analysis','Parameter neighbourhoods, stability plateaus and fragile optimum detection.'],['Walk-Forward Analysis','Rolling calibration and strictly unseen out-of-sample evaluation.'],['Monte Carlo Simulation','Trade-sequence bootstrap, cost stress and drawdown breach probabilities.']].map(x=><article className="strategy" key={x[0]}><FlaskConical/><h3>{x[0]}</h3><p>{x[1]}</p><Pill tone="blue">PLANNED</Pill></article>)}</div>}
         {view==='Data'&&<Panel title="MARKET DATASETS" subtitle="Research data catalogue"><div className="alert-row"><Database/><div><b>XAUUSD M5 bars</b><small>Historical OHLC · import required</small></div><Pill tone="warn">NOT LOADED</Pill></div><div className="alert-row"><Activity/><div><b>XAUUSD tick history</b><small>Bid/ask tick data · broker source required</small></div><Pill tone="warn">NOT LOADED</Pill></div><div className="alert-row"><ListChecks/><div><b>MT5 trade records</b><small>CSV / JSON export</small></div><Pill tone="warn">NOT LOADED</Pill></div></Panel>}
-        {view==='MT5 Bridge'&&<><div className="metrics three"><Metric title="TERMINAL" value={bridge.connected?"CONNECTED":"OFFLINE"} sub={bridge.connected?`Snapshot age ${bridge.age_seconds??0}s`:"No fresh exporter file"} icon={Cable} tone={bridge.connected?"green":"red"}/><Metric title="DATA FEED" value={bridge.connected?"STREAMING":"WAITING"} sub={bridge.last_update||"No telemetry received"} icon={Activity} tone={bridge.connected?"green":"amber"}/><Metric title="EXECUTION" value="LOCKED" sub="This bridge is read-only" icon={LockKeyhole} tone="violet"/></div><Panel title="WINDOWS MT5 LOCAL AGENT" subtitle="Read-only exporter → Common Files → Python API → dashboard"><div className="risk-row"><div><b>API connection</b><small>{API_BASE||"NEXT_PUBLIC_GHOST_API_URL not configured"}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%'}}/></div><code>{bridge.connected?"ONLINE":"OFFLINE"}</code></div><div className="risk-row"><div><b>Snapshot freshness</b><small>{bridge.age_seconds===null?"No snapshot":`${bridge.age_seconds}s old · stale threshold ${bridge.stale_after_seconds}s`}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%',background:bridge.connected?'#4cc99b':'#d7aa4c'}}/></div><code>{bridge.connected?"FRESH":"STALE"}</code></div><ol className="steps"><li>Compile and attach <code>GHOST_Bridge_Exporter.mq5</code> in MetaEditor. It exports telemetry only.</li><li>Start the local service from <code>local_agent</code>: <code>uvicorn main:app --host 127.0.0.1 --port 8765</code>.</li><li>For local Next.js development, set <code>NEXT_PUBLIC_GHOST_API_URL=http://127.0.0.1:8765</code> and restart Next.js.</li><li>Open <code>/api/v1/snapshot</code> to inspect account and positions. Disconnects become stale after 10 seconds.</li></ol><Pill tone={bridge.connected?"green":"warn"}>{bridge.connected?"READ-ONLY TELEMETRY CONNECTED":"WAITING FOR LOCAL EXPORTER"}</Pill></Panel></>}
+        {view==='MT5 Bridge'&&<><div className="metrics three"><Metric title="TERMINAL" value={bridge.connected?"CONNECTED":"OFFLINE"} sub={bridge.connected?`Snapshot age ${bridge.age_seconds??0}s`:"No fresh exporter file"} icon={Cable} tone={bridge.connected?"green":"red"}/><Metric title="DATA FEED" value={bridge.connected?"STREAMING":"WAITING"} sub={bridge.last_update||"No telemetry received"} icon={Activity} tone={bridge.connected?"green":"amber"}/><Metric title="EXECUTION" value="LOCKED" sub="This bridge is read-only" icon={LockKeyhole} tone="violet"/></div><Panel title="WINDOWS MT5 AGENT → VERCEL CLOUD" subtitle="Outbound-only device connection · telemetry and research job polling"><div className="risk-row"><div><b>Dashboard API</b><small>{API_BASE||"Same-origin Vercel API"}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%'}}/></div><code>{bridge.connected?"ONLINE":"OFFLINE"}</code></div><div className="risk-row"><div><b>Snapshot freshness</b><small>{bridge.age_seconds===null?"No cloud snapshot":`${bridge.age_seconds}s old · stale threshold ${bridge.stale_after_seconds}s`}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%',background:bridge.connected?'#4cc99b':'#d7aa4c'}}/></div><code>{bridge.connected?"FRESH":"STALE"}</code></div><ol className="steps"><li>In Vercel, connect a PostgreSQL Marketplace database and apply <code>api/schema.sql</code>.</li><li>Set <code>GHOST_DASHBOARD_PASSWORD</code>, <code>GHOST_SESSION_SECRET</code> and <code>GHOST_PAIRING_SECRET</code> in Vercel Environment Variables, then redeploy.</li><li>Compile and attach <code>GHOST_Bridge_Exporter.mq5</code> in MetaEditor.</li><li>Run <code>py pair.py --api-url https://YOUR-VERCEL-DOMAIN</code> from <code>local_agent</code>, then enter your pairing code at the prompt.</li><li>Run <code>uvicorn main:app --host 127.0.0.1 --port 8765</code>. The agent sends heartbeats and telemetry to Vercel.</li></ol><div className="job-actions"><button className="btn primary" disabled={!CLOUD_MODE||jobBusy} onClick={()=>void queueJob('PING',{})}><Activity size={14}/> Ping Windows agent</button><span className="muted small">PING is the only remote job handler enabled in Agent 0.2.0.</span></div>{jobMessage&&<p className="job-message">{jobMessage}</p>}<Pill tone={bridge.connected?"green":"warn"}>{bridge.connected?"CLOUD TELEMETRY CONNECTED":"WAITING FOR PAIRED AGENT"}</Pill></Panel></>}
         {view==='Code Workspace'&&<div className="code-grid"><Panel title="PROJECT EXPLORER" subtitle="GHOST V2 / WORKSPACE"><button className={file==='python'?'file active':'file'} onClick={()=>setFile('python')}><FileCode2 size={14}/> python / engine.py</button><button className={file==='mql5'?'file active':'file'} onClick={()=>setFile('mql5')}><FileCode2 size={14}/> mt5 / GHOST_v2.mq5</button><p className="muted small">Editor contents are currently held in browser memory. Persistence will require the local agent.</p></Panel><div className="editor"><div className="editor-head"><div><button className={file==='python'?'selected':''} onClick={()=>setFile('python')}>engine.py</button><button className={file==='mql5'?'selected':''} onClick={()=>setFile('mql5')}>GHOST_v2.mq5</button></div><div><button className="btn" onClick={()=>say('Saved in browser workspace only. Connect the local agent for filesystem persistence.')}>Save</button><button className="btn primary" onClick={()=>say(file==='python'?'Python run requires the local research worker. No code was executed.':'Compile request requires MetaEditor on the Windows MT5 machine. No compilation was run.')}><Play size={13}/>{file==='python'?'Run':'Compile'}</button></div></div><div className="editor-box"><MonacoEditor height="440px" language={file==='python'?'python':'cpp'} theme="vs-dark" value={code} onChange={v=>setCode(v??'')} options={{minimap:{enabled:false},fontSize:13,automaticLayout:true,scrollBeyondLastLine:false,tabSize:4,padding:{top:14}}}/></div><div className="terminal"><span><Terminal size={13}/> OUTPUT / TERMINAL</span>{output}</div></div></div>}
         {view==='Settings'&&<Panel title="RISK & EXECUTION SETTINGS" subtitle="Illustrative defaults · no broker effect"><div className="form-grid"><label>Risk per trade (%)<input defaultValue="0.50"/></label><label>Daily loss limit (%)<input defaultValue="2.00"/></label><label>Maximum drawdown (%)<input defaultValue="5.00"/></label><label>Maximum open positions<input defaultValue="3"/></label><label>Maximum total lots<input defaultValue="0.03"/></label><label>Mode<select defaultValue="DEMO"><option>DEMO</option><option disabled>LIVE — locked</option></select></label></div><Pill tone="warn">CONFIGURATION NOT CONNECTED</Pill></Panel>}
         <footer>GHOST V2 <b>0.1.0</b><span>LOCAL-FIRST · RISK GOVERNOR HAS FINAL AUTHORITY</span><span>© 2026 GHOST PROJECT</span></footer>
