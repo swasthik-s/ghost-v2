@@ -70,7 +70,13 @@ dist\GHOST-Agent\GHOST-Agent.exe
 
 Keep the entire `dist\GHOST-Agent` folder together when moving it to the trading PC. The executable stores its SQLite data and pairing config under `%APPDATA%\GHOST`. Python does not need to be installed on the destination PC if you copy the complete onedir package, but MT5 must be installed and running.
 
-Run `GHOST-Agent.exe` manually once and confirm the local health endpoint responds at `http://127.0.0.1:8765/health`.
+Pair the target PC directly from the executable (it prompts securely for the pairing code):
+
+```powershell
+.\dist\GHOST-Agent\GHOST-Agent.exe --pair --api-url https://YOUR-VERCEL-DOMAIN --device-name GHOST-MT5-PC
+```
+
+Then run `GHOST-Agent.exe` normally and confirm the local health endpoint responds at `http://127.0.0.1:8765/health`.
 
 ## 5. Job worker availability
 
@@ -80,9 +86,9 @@ Agent 0.2.0 handles the `PING` diagnostic job. Backtest, sensitivity, walk-forwa
 
 After manual validation, create a Windows Task Scheduler task:
 - Trigger: At log on
-- Program: the Python executable inside `.venv\Scripts\python.exe`
-- Arguments: `-m uvicorn main:app --host 127.0.0.1 --port 8765`
-- Start in: this `local_agent` folder
+- Program: `dist\GHOST-Agent\GHOST-Agent.exe` (or the copied deployment folder)
+- Arguments: none
+- Start in: the `GHOST-Agent` executable folder
 - Enable restart on failure
 
 Keep MT5 itself configured to start with Windows and remain logged in. Do not run the local API on `0.0.0.0`; it should stay bound to `127.0.0.1`.
