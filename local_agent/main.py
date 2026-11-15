@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 STALE_AFTER_SECONDS = float(os.getenv("GHOST_STALE_AFTER_SECONDS", "10"))
 EQUITY_SAMPLE_SECONDS = float(os.getenv("GHOST_EQUITY_SAMPLE_SECONDS", "15"))
-CLOUD_UPLOAD_SECONDS = float(os.getenv("GHOST_CLOUD_UPLOAD_SECONDS", "2"))
-CLOUD_HEARTBEAT_SECONDS = float(os.getenv("GHOST_CLOUD_HEARTBEAT_SECONDS", "15"))
-CLOUD_JOB_POLL_SECONDS = float(os.getenv("GHOST_CLOUD_JOB_POLL_SECONDS", "5"))
+CLOUD_UPLOAD_SECONDS = float(os.getenv("GHOST_CLOUD_UPLOAD_SECONDS", "5"))
+CLOUD_HEARTBEAT_SECONDS = float(os.getenv("GHOST_CLOUD_HEARTBEAT_SECONDS", "30"))
+CLOUD_JOB_POLL_SECONDS = float(os.getenv("GHOST_CLOUD_JOB_POLL_SECONDS", "15"))
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("GHOST_DB_PATH", str(ROOT / "data" / "ghost_local.db")))
 DEFAULT_COMMON = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "MetaQuotes" / "Terminal" / "Common" / "Files"
@@ -134,18 +134,18 @@ async def cloud_sync_worker() -> None:
     last_upload = 0.0
     last_uploaded_mtime: float | None = None
     last_job_poll = 0.0
-    while True:
-        try:
-            settings = load_agent_settings()
-            base = settings.get("cloud_api_url", "")
-            token = settings.get("device_token", "")
-            if not base or not token:
-                await asyncio.sleep(3)
-                continue
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        while True:
+            try:
+                settings = load_agent_settings()
+                base = settings.get("cloud_api_url", "")
+                token = settings.get("device_token", "")
+                if not base or not token:
+                    await asyncio.sleep(3)
+                    continue
 
-            now = time.time()
-            headers = {"Authorization": f"Bearer {token}"}
-            async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+                client.headers["Authorization"] = f"Bearer {token}"
+                now = time.time()
                 if now - last_heartbeat >= CLOUD_HEARTBEAT_SECONDS:
                     payload = cache.get("payload") or {}
                     terminal = payload.get("terminal", {})
@@ -189,7 +189,7 @@ async def cloud_sync_worker() -> None:
                         if job:
                             job_id = job["id"]
                             if job["job_type"] == "PING":
-                                await client.post(
+                                result = await client.post(
                                     f"{base}/api/v1/agent/jobs/{job_id}/complete",
                                     json={"result": {
                                         "agent_version": "0.2.0",
@@ -198,15 +198,16 @@ async def cloud_sync_worker() -> None:
                                     }},
                                 )
                             else:
-                                await client.post(
+                                result = await client.post(
                                     f"{base}/api/v1/agent/jobs/{job_id}/fail",
                                     json={"error": "This job type is queued but its research executor is not included in GHOST Agent 0.2.0 yet."},
                                 )
+                            result.raise_for_status()
                     except httpx.HTTPError as exc:
                         print(f"GHOST Agent job poll failed: {exc}")
-        except Exception as exc:
-            print(f"GHOST Agent cloud worker error: {type(exc).__name__}: {exc}")
-        await asyncio.sleep(1)
+            except Exception as exc:
+                print(f"GHOST Agent cloud worker error: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(1)
 
 
 @asynccontextmanager
