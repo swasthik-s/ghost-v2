@@ -196,7 +196,7 @@ export default function Home() {
     void load();
     const timer=window.setInterval(()=>void load(),10000);
     return()=>{active=false;window.clearInterval(timer);};
-  },[authenticated]);
+  },[authenticated,refreshNonce]);
   const code=file==='python'?pythonCode:mqlCode;
   const setCode=file==='python'?setPythonCode:setMqlCode;
   const chart=useMemo(()=>{
@@ -284,11 +284,13 @@ export default function Home() {
           {!CLOUD_MODE?<p className="muted small">Device administration is available from the deployed Vercel dashboard.</p>:<>
             {devices.length===0?<p className="muted small">No paired devices yet. Pair the Windows GHOST Agent from the MT5 Bridge page.</p>:devices.map(device=>{
               const heartbeatAge=device.last_seen_at?Math.max(0,Math.round((Date.now()-new Date(device.last_seen_at).getTime())/1000)):null;
+              const telemetryAge=device.latest_received_at?Math.max(0,Math.round((Date.now()-new Date(device.latest_received_at).getTime())/1000)):null;
               const agentOnline=!device.revoked_at&&heartbeatAge!==null&&heartbeatAge<=90;
+              const mt5Fresh=!device.revoked_at&&telemetryAge!==null&&telemetryAge<=10&&device.terminal_connected;
               return <div className="device-row" key={device.id}>
                 <div className="device-icon"><Laptop size={18}/></div>
                 <div className="device-info"><b>{device.device_name}</b><small>{device.host_label||'Windows'} · Agent {device.agent_version||'unknown'} · MT5 build {device.mt5_build??'—'}</small><small>Last heartbeat: {heartbeatAge===null?'Never':heartbeatAge+'s ago'} · Last telemetry: {device.latest_received_at?new Date(device.latest_received_at).toLocaleString():'None'}</small></div>
-                <div className="device-status"><Pill tone={device.revoked_at?'red':agentOnline?'green':'warn'}>{device.revoked_at?'REVOKED':agentOnline?'AGENT ONLINE':'OFFLINE'}</Pill><Pill tone={!device.revoked_at&&device.terminal_connected?'green':'neutral'}>{device.terminal_connected&&!device.revoked_at?'MT5 CONNECTED':'MT5 NOT CONFIRMED'}</Pill></div>
+                <div className="device-status"><Pill tone={device.revoked_at?'red':agentOnline?'green':'warn'}>{device.revoked_at?'REVOKED':agentOnline?'AGENT ONLINE':'OFFLINE'}</Pill><Pill tone={mt5Fresh?'green':'neutral'}>{mt5Fresh?'MT5 CONNECTED':telemetryAge!==null&&telemetryAge>10?'MT5 TELEMETRY STALE':'MT5 NOT CONFIRMED'}</Pill></div>
                 <button className="btn danger" disabled={!!device.revoked_at||deviceBusy===device.id} onClick={()=>void revokeDevice(device.id,device.device_name)}>{deviceBusy===device.id?'Revoking…':'Revoke token'}</button>
               </div>;
             })}
