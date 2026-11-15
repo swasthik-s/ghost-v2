@@ -183,7 +183,7 @@ async def cloud_sync_worker() -> None:
                 if now - last_job_poll >= CLOUD_JOB_POLL_SECONDS:
                     last_job_poll = now
                     try:
-                        response = await client.post(f"{base}/api/v1/agent/jobs/claim", json={})
+                        response = await client.post(f"{base}/api/v1/agent/jobs/claim")
                         response.raise_for_status()
                         job = response.json().get("job")
                         if job:
