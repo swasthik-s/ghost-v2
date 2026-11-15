@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import uvicorn
+
+if "--pair" in sys.argv[1:]:
+    from pair import main as pair_main
+
+    sys.argv = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != "--pair"]
+    raise SystemExit(pair_main())
 
 from main import app
 
