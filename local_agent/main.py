@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 STALE_AFTER_SECONDS = float(os.getenv("GHOST_STALE_AFTER_SECONDS", "10"))
+EQUITY_SAMPLE_SECONDS = float(os.getenv("GHOST_EQUITY_SAMPLE_SECONDS", "15"))
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("GHOST_DB_PATH", str(ROOT / "data" / "ghost_local.db")))
 DEFAULT_COMMON = Path(os.getenv(
@@ -22,7 +23,7 @@ DEFAULT_COMMON = Path(os.getenv(
 COMMON_FILES_DIR = Path(os.getenv("MT5_COMMON_FILES_DIR", str(DEFAULT_COMMON)))
 SNAPSHOT_PATH = COMMON_FILES_DIR / "GHOST" / "telemetry.json"
 
-cache: dict[str, Any] = {"payload": None, "mtime": None, "read_error": None}
+cache: dict[str, Any] = {"payload": None, "mtime": None, "read_error": None, "last_sampled_at": None}
 
 
 def db_connect() -> sqlite3.Connection:
@@ -90,15 +91,23 @@ def save_equity(payload: dict[str, Any], mtime: float) -> None:
 
 async def telemetry_worker() -> None:
     while True:
-        payload, mtime, error = await asyncio.to_thread(read_export)
-        if payload is not None and mtime is not None:
-            old_mtime = cache.get("mtime")
-            cache.update(payload=payload, mtime=mtime, read_error=None)
-            if old_mtime is None or mtime > float(old_mtime):
-                await asyncio.to_thread(save_equity, payload, mtime)
-        elif error:
-            # Keep the last known payload for diagnostics; age determines connectivity.
-            cache["read_error"] = error
+        try:
+            payload, mtime, error = await asyncio.to_thread(read_export)
+            if payload is not None and mtime is not None:
+                old_mtime = cache.get("mtime")
+                cache.update(payload=payload, mtime=mtime, read_error=None)
+                last_sampled = cache.get("last_sampled_at")
+                if (
+                    (old_mtime is None or mtime > float(old_mtime))
+                    and (last_sampled is None or time.time() - float(last_sampled) >= EQUITY_SAMPLE_SECONDS)
+                ):
+                    await asyncio.to_thread(save_equity, payload, mtime)
+                    cache["last_sampled_at"] = time.time()
+            elif error:
+                # Keep the last known payload for diagnostics; age determines connectivity.
+                cache["read_error"] = error
+        except Exception as exc:
+            cache["read_error"] = f"Telemetry worker error: {exc}"
         await asyncio.sleep(1)
 
 
