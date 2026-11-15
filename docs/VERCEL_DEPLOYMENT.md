@@ -77,6 +77,19 @@ uvicorn main:app --host 127.0.0.1 --port 8765
 
 The agent reads the exporter file from MT5 Common Files, stores a local SQLite history, sends snapshots and heartbeats to Vercel, and polls the cloud research queue. The local API binds to loopback only. Do not open port 8765 on your router or expose the MT5 terminal.
 
+### Optional: install as an always-running Windows app
+
+After pairing and verifying the Python agent manually, build and install the executable:
+
+\`\`\`powershell
+.\build_windows.ps1
+.\install_startup.ps1
+\`\`\`
+
+The installer copies the complete PyInstaller bundle into \`%LOCALAPPDATA%\Programs\GHOST-Agent\`, registers a Task Scheduler task named \`GHOST Agent\`, and starts it. It starts automatically at the next Windows logon and is configured to restart if the process exits.
+
+To remove the app and startup task, run \`.\uninstall_startup.ps1\`. This preserves the pairing credential in \`%APPDATA%\GHOST\agent.json\`; revoke the device in the dashboard and delete that credential file separately if you are retiring the PC.
+
 When the cloud snapshot is fresh, the Vercel dashboard should change from sample/demo metrics to read-only MT5 account and position data.
 
 ## 6. Job queue status in Agent 0.2.0
