@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import sqlite3
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,7 +20,7 @@ EQUITY_SAMPLE_SECONDS = float(os.getenv("GHOST_EQUITY_SAMPLE_SECONDS", "15"))
 CLOUD_UPLOAD_SECONDS = float(os.getenv("GHOST_CLOUD_UPLOAD_SECONDS", "5"))
 CLOUD_HEARTBEAT_SECONDS = float(os.getenv("GHOST_CLOUD_HEARTBEAT_SECONDS", "30"))
 CLOUD_JOB_POLL_SECONDS = float(os.getenv("GHOST_CLOUD_JOB_POLL_SECONDS", "15"))
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("GHOST_DB_PATH", str(ROOT / "data" / "ghost_local.db")))
 DEFAULT_COMMON = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "MetaQuotes" / "Terminal" / "Common" / "Files"
 COMMON_FILES_DIR = Path(os.getenv("MT5_COMMON_FILES_DIR", str(DEFAULT_COMMON)))
