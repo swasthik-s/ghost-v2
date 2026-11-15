@@ -7,7 +7,7 @@ A local-first trading, risk and research terminal for MT5. The initial UI releas
 - Next.js 15 App Router + React + TypeScript
 - Recharts for dashboard visualisation
 - Monaco Editor for Python and MQL5 workspace tabs
-- Python research/bridge services (to be added in the next milestone)
+- Python local MT5 telemetry bridge with SQLite history (read-only milestone)
 - MT5 Expert Advisor on the Windows execution machine
 
 ## Run locally
@@ -56,11 +56,17 @@ Windows local agent <----> MT5 terminal + GHOST EA
 
 Strategy Tester mode should use file-based configuration and export files. Live/demo mode may use a local bridge with a versioned JSON protocol, heartbeat, timeouts and fail-closed behaviour (`WAIT` when the bridge is disconnected or stale).
 
+## Local MT5 telemetry bridge (read-only)
+
+See [local_agent/README.md](local_agent/README.md). The separate `GHOST_Bridge_Exporter.mq5` EA writes account and open-position telemetry to MT5 Common Files. The Python service ingests the file into SQLite. The Next.js dashboard polls the service when `NEXT_PUBLIC_GHOST_API_URL` is configured.
+
+This local connection is not automatically available to the Vercel-hosted page. Do not port-forward the local API or publish the MT5 terminal. A secure cloud relay and durable cloud database are required for remote viewing.
+
 ## Next milestones
 
-1. Implement Python FastAPI service, SQLite schema and typed API contracts.
-2. Implement Windows local agent and MT5 EA telemetry/export protocol.
-3. Connect dashboard to live/demo account, position, equity and execution events.
-4. Add research worker for bar-level backtests, sensitivity, walk-forward and Monte Carlo.
-5. Add filesystem-backed editor save, MetaEditor compile command and controlled Python job execution.
-6. Add auth, roles, audit log, secrets handling and deployment hardening before any live account integration.
+1. Verify exporter compilation and JSON output on the user's MT5 terminal.
+2. Run the local Python bridge, verify live account snapshots and stale-feed transitions.
+3. Add deal-history export for genuine execution log, realised daily P&L and win rate.
+4. Build secure remote agent-to-cloud ingestion with authentication and durable storage.
+5. Add research worker for real-data backtests, sensitivity, walk-forward and Monte Carlo.
+6. Add filesystem-backed editor save, MetaEditor compile command, controlled Python jobs, auth and audit logs before any live order integration.
