@@ -42,7 +42,7 @@ Open:
 
 - `https://YOUR-VERCEL-DOMAIN/api/v1/health`
 
-Expected response includes `"status":"ok"` and `"execution_enabled":false`. This health route does not require a database connection. The login screen should appear on the website root.
+Expected response includes `"status":"ok"`, `"database_configured":true`, `"database_connected":true` and `"execution_enabled":false`. If `database_connected` is false, check the Marketplace database integration and the `GHOST_DATABASE_URL` / `POSTGRES_URL` / `DATABASE_URL` environment variable before pairing an agent. The login screen should appear on the website root.
 
 Sign in using `GHOST_DASHBOARD_PASSWORD`.
 
