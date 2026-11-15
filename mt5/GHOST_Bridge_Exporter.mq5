@@ -31,7 +31,7 @@ bool ExportSnapshot()
 {
    FolderCreate("GHOST", FILE_COMMON);
    string path = "GHOST\\telemetry.json";
-   int handle = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   int handle = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON, 9, CP_UTF8);
    if(handle == INVALID_HANDLE)
    {
       Print("GHOST exporter: FileOpen failed. Error=", GetLastError());
