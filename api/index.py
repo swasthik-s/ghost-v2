@@ -253,23 +253,39 @@ def ingest_snapshot(body: SnapshotRequest, device: dict[str, Any] = Depends(requ
     generated_at = parse_export_time(body.generated_at_utc)
     payload = body.model_dump(mode="json")
     with connect() as conn:
+        # Keep the latest state on the device row for real-time dashboards.
+        conn.execute(
+            """UPDATE devices SET latest_payload=%s, latest_generated_at=%s,
+               latest_received_at=now(), last_seen_at=now(), terminal_connected=%s
+               WHERE id=%s""",
+            (Jsonb(payload), generated_at, body.terminal.connected, device["id"]),
+        )
+        # Keep a lower-frequency audit trail rather than one database row per upload.
         conn.execute(
             """INSERT INTO telemetry_snapshots (device_id, generated_at, payload)
-               VALUES (%s,%s,%s)
+               SELECT %s,%s,%s
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM telemetry_snapshots
+                 WHERE device_id=%s AND received_at > now() - interval '15 seconds'
+               )
                ON CONFLICT (device_id, generated_at)
                DO UPDATE SET received_at=now(), payload=EXCLUDED.payload""",
-            (device["id"], generated_at, Jsonb(payload)),
+            (device["id"], generated_at, Jsonb(payload), device["id"]),
         )
         account = body.account
         conn.execute(
             """INSERT INTO equity_snapshots
                (device_id,captured_at,balance,equity,floating_pnl,margin,free_margin,margin_level,currency)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM equity_snapshots
+                 WHERE device_id=%s AND captured_at > %s - interval '15 seconds'
+               )
                ON CONFLICT (device_id,captured_at) DO NOTHING""",
             (device["id"], generated_at, account.balance, account.equity, account.floating_pnl,
-             account.margin, account.free_margin, account.margin_level, account.currency),
+             account.margin, account.free_margin, account.margin_level, account.currency,
+             device["id"], generated_at),
         )
-        conn.execute("UPDATE devices SET last_seen_at=now(), terminal_connected=%s WHERE id=%s", (body.terminal.connected, device["id"]))
     return {"accepted": True, "generated_at": generated_at.isoformat(), "position_count": len(body.positions), "execution_enabled": False}
 
 
@@ -277,9 +293,11 @@ def ingest_snapshot(body: SnapshotRequest, device: dict[str, Any] = Depends(requ
 def dashboard_snapshot(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
-            """SELECT s.generated_at,s.received_at,s.payload,d.id AS device_id,d.device_name,d.last_seen_at,d.terminal_connected
-               FROM telemetry_snapshots s JOIN devices d ON d.id=s.device_id
-               WHERE d.revoked_at IS NULL ORDER BY s.received_at DESC LIMIT 1"""
+            """SELECT latest_generated_at AS generated_at,latest_received_at AS received_at,
+                      latest_payload AS payload,id AS device_id,device_name,last_seen_at,terminal_connected
+               FROM devices
+               WHERE revoked_at IS NULL AND latest_payload IS NOT NULL
+               ORDER BY latest_received_at DESC LIMIT 1"""
         ).fetchone()
     if not row:
         return {"connected": False, "age_seconds": None, "account": None, "positions": [], "terminal": {}, "execution_enabled": False}
@@ -306,7 +324,7 @@ def dashboard_equity(limit: int = 300, _: str = Depends(require_dashboard)) -> d
     safe_limit = max(1, min(limit, 2000))
     with connect() as conn:
         device = conn.execute(
-            "SELECT device_id FROM telemetry_snapshots ORDER BY received_at DESC LIMIT 1"
+            "SELECT id AS device_id FROM devices WHERE latest_payload IS NOT NULL AND revoked_at IS NULL ORDER BY latest_received_at DESC LIMIT 1"
         ).fetchone()
         if not device:
             return {"count": 0, "items": []}
@@ -329,14 +347,14 @@ def dashboard_devices(_: str = Depends(require_dashboard)) -> dict[str, Any]:
     with connect() as conn:
         rows = conn.execute(
             """SELECT id,device_name,created_at,last_seen_at,agent_version,host_label,
-                      terminal_connected,mt5_build,revoked_at
+                      terminal_connected,mt5_build,latest_received_at,revoked_at
                FROM devices ORDER BY created_at DESC"""
         ).fetchall()
     items = []
     for row in rows:
         item = dict(row)
         item["id"] = str(item["id"])
-        for key in ("created_at", "last_seen_at", "revoked_at"):
+        for key in ("created_at", "last_seen_at", "latest_received_at", "revoked_at"):
             item[key] = item[key].isoformat() if item[key] else None
         items.append(item)
     return {"items": items}
