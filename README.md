@@ -44,3 +44,8 @@ The agent initiates outbound HTTPS connections to Vercel. Do not port-forward th
 ## Validation
 
 GitHub Actions is configured to run Python bridge tests, compile Python sources and build the Next.js app. Do not assume these checks passed unless a completed run reports success. MetaEditor compilation and real MT5 telemetry still require verification on Windows.
+
+
+## Device administration
+
+The Vercel dashboard includes a Devices page. It lists paired agents, heartbeat freshness, MT5 telemetry freshness and supports revoking a device token. Revocation blocks the next agent request using that credential; re-pair the PC to issue a new token.
