@@ -27,3 +27,10 @@ Heavy historical backtests, parameter sweeps, walk-forward analysis and Monte Ca
 - Python FastAPI: health and decision contract stubs only.
 - MT5 bridge: not implemented; no account connection or order execution.
 - MT5 source: safe placeholder only; compile and validate it with MetaEditor before any use.
+
+
+## Connecting the Vercel UI to the local MT5 data
+
+The local bridge in `local_agent/` binds to `127.0.0.1` and is intentionally not exposed. The browser app can poll a configured API URL, but a Vercel deployment does not make the Windows PC reachable. Do not set the public Vercel variable to `http://127.0.0.1:8765` expecting it to reach the PC, and do not open the local port on the router.
+
+For now, use local Next.js development to verify MT5 telemetry. A later remote deployment milestone must add a secure authenticated outbound agent channel and durable cloud storage before the Vercel app can receive account data.
