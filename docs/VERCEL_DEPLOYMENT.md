@@ -89,7 +89,7 @@ In this release, the Windows agent executes only `PING`. Other job types are acc
 
 - Vercel Functions handle authenticated API requests; they are not a permanent MT5 process.
 - The Windows agent initiates outbound HTTPS requests. No inbound tunnel is required.
-- The agent credential is stored hashed in PostgreSQL; the raw token is stored only in the Windows agent config after pairing.
-- Dashboard sessions are signed, HTTP-only cookies with a 12-hour lifetime.
+- The agent credential is stored hashed in PostgreSQL; the raw token is stored only in the Windows agent config after pairing. The Devices page can revoke a lost or replaced PC token. Revocation takes effect on the next request.
+- Dashboard sessions are signed, HTTP-only cookies with a 12-hour lifetime and a random per-login nonce.
 - Telemetry and job APIs are separate from broker execution.
 - No cloud endpoint places, modifies or closes trades. Live order execution remains out of scope.
