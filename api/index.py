@@ -409,7 +409,7 @@ def claim_job(device: dict[str, Any] = Depends(require_device)) -> dict[str, Any
                    WHERE attempts < 3 AND
                      (status='queued' OR (status='running' AND lease_until < now()))
                      AND (assigned_device_id IS NULL OR assigned_device_id=%s)
-                   ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1""",
+                   ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED""",
                 (device["id"],),
             ).fetchone()
             if not job:
