@@ -6,7 +6,7 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Bell, Bot, Cable,
   ChartNoAxesCombined, ChevronDown, CircleDollarSign, Code2, Database,
   FileCode2, FlaskConical, Gauge, LayoutDashboard, ListChecks, LockKeyhole,
-  Menu, MoreHorizontal, Play, RefreshCw, Search, Settings2, Shield,
+  Laptop, Menu, MoreHorizontal, Play, RefreshCw, Search, Settings2, Shield,
   SlidersHorizontal, Terminal, Wallet, X, Zap,
 } from 'lucide-react';
 import {
@@ -16,8 +16,9 @@ import {
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
-type Page = 'Overview'|'Risk'|'Exposure'|'Alerts'|'Strategies'|'Backtests'|'Validation Lab'|'Data'|'MT5 Bridge'|'Code Workspace'|'Settings';
+type Page = 'Overview'|'Risk'|'Exposure'|'Alerts'|'Strategies'|'Backtests'|'Validation Lab'|'Data'|'MT5 Bridge'|'Code Workspace'|'Devices'|'Settings';
 
+type DeviceInfo = { id:string; device_name:string; created_at:string; last_seen_at:string|null; agent_version:string|null; host_label:string|null; terminal_connected:boolean; mt5_build:number|null; latest_received_at:string|null; revoked_at:string|null };
 type BridgePosition = { ticket:number; symbol:string; side:'BUY'|'SELL'; volume:number; price_open:number; price_current:number; profit:number; swap:number; stop_loss:number; take_profit:number; magic:number; comment:string };
 type BridgeSnapshot = {
   connected:boolean; data_source:string; age_seconds:number|null; stale_after_seconds:number;
@@ -35,7 +36,7 @@ const nav: {group:string;items:{label:Page;icon:typeof Activity}[]}[] = [
   {group:'RISK MANAGEMENT',items:[{label:'Risk',icon:Shield},{label:'Exposure',icon:SlidersHorizontal},{label:'Alerts',icon:AlertTriangle}]},
   {group:'STRATEGY & RESEARCH',items:[{label:'Strategies',icon:Zap},{label:'Backtests',icon:FlaskConical},{label:'Validation Lab',icon:ListChecks},{label:'Data',icon:Database}]},
   {group:'CONNECTIVITY & TOOLS',items:[{label:'MT5 Bridge',icon:Cable},{label:'Code Workspace',icon:Code2}]},
-  {group:'SYSTEM',items:[{label:'Settings',icon:Settings2}]},
+  {group:'SYSTEM',items:[{label:'Devices',icon:Laptop},{label:'Settings',icon:Settings2}]},
 ];
 const equity = Array.from({length:46},(_,i)=>({n:i,e:100000+i*255+Math.sin(i*.72)*520+Math.cos(i*.23)*370}));
 const pnl = [{d:'Jun',v:1120},{d:'Jul',v:-420},{d:'Aug',v:1840},{d:'Sep',v:760},{d:'Oct',v:2210},{d:'Nov',v:1247}];
@@ -122,6 +123,9 @@ export default function Home() {
   const [authError,setAuthError]=useState('');
   const [authBusy,setAuthBusy]=useState(false);
   const [jobs,setJobs]=useState<any[]>([]);
+  const [devices,setDevices]=useState<DeviceInfo[]>([]);
+  const [deviceBusy,setDeviceBusy]=useState<string|null>(null);
+  const [deviceMessage,setDeviceMessage]=useState('');
   const [jobBusy,setJobBusy]=useState(false);
   const [jobMessage,setJobMessage]=useState('');
   const [refreshNonce,setRefreshNonce]=useState(0);
@@ -177,6 +181,22 @@ export default function Home() {
     const timer=window.setInterval(()=>void load(),5000);
     return()=>{active=false;window.clearInterval(timer);};
   },[authenticated]);
+  useEffect(()=>{
+    if(!CLOUD_MODE || !authenticated) return;
+    let active=true;
+    const load=async()=>{
+      try{
+        const response=await fetch(apiUrl('/api/v1/dashboard/devices'),{cache:'no-store',credentials:'same-origin'});
+        if(response.ok){
+          const data=await response.json();
+          if(active)setDevices(Array.isArray(data.items)?data.items:[]);
+        }
+      }catch{/* Keep the last successful device list visible. */}
+    };
+    void load();
+    const timer=window.setInterval(()=>void load(),10000);
+    return()=>{active=false;window.clearInterval(timer);};
+  },[authenticated]);
   const code=file==='python'?pythonCode:mqlCode;
   const setCode=file==='python'?setPythonCode:setMqlCode;
   const chart=useMemo(()=>{
@@ -185,6 +205,21 @@ export default function Home() {
   },[bridge.connected,liveEquity]);
   const title=view==='Overview'?'Trading overview':view;
   const say=(s:string)=>setOutput(s);
+  const revokeDevice=async(deviceId:string,deviceName:string)=>{
+    if(!CLOUD_MODE) return;
+    const confirmed=window.confirm(`Revoke the GHOST Agent token for "${deviceName}"? The agent will stop syncing until paired again.`);
+    if(!confirmed) return;
+    setDeviceBusy(deviceId);setDeviceMessage('');
+    try{
+      const response=await fetch(apiUrl(`/api/v1/dashboard/devices/${deviceId}/revoke`),{method:'POST',credentials:'same-origin'});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||'Could not revoke device.');
+      setDeviceMessage(data.already_revoked?'This device was already revoked.':'Device token revoked.');
+      const list=await fetch(apiUrl('/api/v1/dashboard/devices'),{cache:'no-store',credentials:'same-origin'});
+      if(list.ok){const body=await list.json();setDevices(Array.isArray(body.items)?body.items:[]);}
+    }catch(error){setDeviceMessage(error instanceof Error?error.message:'Device revocation failed.');}
+    finally{setDeviceBusy(null);}
+  };
   const login=async(event:React.FormEvent<HTMLFormElement>)=>{
     event.preventDefault();setAuthBusy(true);setAuthError('');
     try{
@@ -245,6 +280,22 @@ export default function Home() {
         {view==='Data'&&<Panel title="MARKET DATASETS" subtitle="Research data catalogue"><div className="alert-row"><Database/><div><b>XAUUSD M5 bars</b><small>Historical OHLC · import required</small></div><Pill tone="warn">NOT LOADED</Pill></div><div className="alert-row"><Activity/><div><b>XAUUSD tick history</b><small>Bid/ask tick data · broker source required</small></div><Pill tone="warn">NOT LOADED</Pill></div><div className="alert-row"><ListChecks/><div><b>MT5 trade records</b><small>CSV / JSON export</small></div><Pill tone="warn">NOT LOADED</Pill></div></Panel>}
         {view==='MT5 Bridge'&&<><div className="metrics three"><Metric title="TERMINAL" value={bridge.connected?"CONNECTED":"OFFLINE"} sub={bridge.connected?`Snapshot age ${bridge.age_seconds??0}s`:"No fresh exporter file"} icon={Cable} tone={bridge.connected?"green":"red"}/><Metric title="DATA FEED" value={bridge.connected?"STREAMING":"WAITING"} sub={bridge.last_update||"No telemetry received"} icon={Activity} tone={bridge.connected?"green":"amber"}/><Metric title="EXECUTION" value="LOCKED" sub="This bridge is read-only" icon={LockKeyhole} tone="violet"/></div><Panel title="WINDOWS MT5 AGENT → VERCEL CLOUD" subtitle="Outbound-only device connection · telemetry and research job polling"><div className="risk-row"><div><b>Dashboard API</b><small>{API_BASE||"Same-origin Vercel API"}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%'}}/></div><code>{bridge.connected?"ONLINE":"OFFLINE"}</code></div><div className="risk-row"><div><b>Snapshot freshness</b><small>{bridge.age_seconds===null?"No cloud snapshot":`${bridge.age_seconds}s old · stale threshold ${bridge.stale_after_seconds}s`}</small></div><div className="bar"><i style={{width:bridge.connected?'100%':'0%',background:bridge.connected?'#4cc99b':'#d7aa4c'}}/></div><code>{bridge.connected?"FRESH":"STALE"}</code></div><ol className="steps"><li>In Vercel, connect a PostgreSQL Marketplace database and apply <code>api/schema.sql</code>.</li><li>Set <code>GHOST_DASHBOARD_PASSWORD</code>, <code>GHOST_SESSION_SECRET</code> and <code>GHOST_PAIRING_SECRET</code> in Vercel Environment Variables, then redeploy.</li><li>Compile and attach <code>GHOST_Bridge_Exporter.mq5</code> in MetaEditor.</li><li>Run <code>py pair.py --api-url https://YOUR-VERCEL-DOMAIN</code> from <code>local_agent</code>, then enter your pairing code at the prompt.</li><li>Run <code>uvicorn main:app --host 127.0.0.1 --port 8765</code>. The agent sends heartbeats and telemetry to Vercel.</li></ol><div className="job-actions"><button className="btn primary" disabled={!CLOUD_MODE||jobBusy} onClick={()=>void queueJob('PING',{})}><Activity size={14}/> Ping Windows agent</button><span className="muted small">PING is the only remote job handler enabled in Agent 0.2.0.</span></div>{jobMessage&&<p className="job-message">{jobMessage}</p>}<Pill tone={bridge.connected?"green":"warn"}>{bridge.connected?"CLOUD TELEMETRY CONNECTED":"WAITING FOR PAIRED AGENT"}</Pill></Panel></>}
         {view==='Code Workspace'&&<div className="code-grid"><Panel title="PROJECT EXPLORER" subtitle="GHOST V2 / WORKSPACE"><button className={file==='python'?'file active':'file'} onClick={()=>setFile('python')}><FileCode2 size={14}/> python / engine.py</button><button className={file==='mql5'?'file active':'file'} onClick={()=>setFile('mql5')}><FileCode2 size={14}/> mt5 / GHOST_v2.mq5</button><p className="muted small">Editor contents are currently held in browser memory. Persistence will require the local agent.</p></Panel><div className="editor"><div className="editor-head"><div><button className={file==='python'?'selected':''} onClick={()=>setFile('python')}>engine.py</button><button className={file==='mql5'?'selected':''} onClick={()=>setFile('mql5')}>GHOST_v2.mq5</button></div><div><button className="btn" onClick={()=>say('Saved in browser workspace only. Connect the local agent for filesystem persistence.')}>Save</button><button className="btn primary" onClick={()=>say(file==='python'?'Python run requires the local research worker. No code was executed.':'Compile request requires MetaEditor on the Windows MT5 machine. No compilation was run.')}><Play size={13}/>{file==='python'?'Run':'Compile'}</button></div></div><div className="editor-box"><MonacoEditor height="440px" language={file==='python'?'python':'cpp'} theme="vs-dark" value={code} onChange={v=>setCode(v??'')} options={{minimap:{enabled:false},fontSize:13,automaticLayout:true,scrollBeyondLastLine:false,tabSize:4,padding:{top:14}}}/></div><div className="terminal"><span><Terminal size={13}/> OUTPUT / TERMINAL</span>{output}</div></div></div>}
+        {view==='Devices'&&<Panel title="PAIRED WINDOWS DEVICES" subtitle="Manage the GHOST Agent credentials allowed to upload MT5 telemetry and claim research jobs" right={<button className="btn" onClick={()=>setRefreshNonce(v=>v+1)}><RefreshCw size={13}/> Refresh</button>}>
+          {!CLOUD_MODE?<p className="muted small">Device administration is available from the deployed Vercel dashboard.</p>:<>
+            {devices.length===0?<p className="muted small">No paired devices yet. Pair the Windows GHOST Agent from the MT5 Bridge page.</p>:devices.map(device=>{
+              const heartbeatAge=device.last_seen_at?Math.max(0,Math.round((Date.now()-new Date(device.last_seen_at).getTime())/1000)):null;
+              const agentOnline=!device.revoked_at&&heartbeatAge!==null&&heartbeatAge<=90;
+              return <div className="device-row" key={device.id}>
+                <div className="device-icon"><Laptop size={18}/></div>
+                <div className="device-info"><b>{device.device_name}</b><small>{device.host_label||'Windows'} · Agent {device.agent_version||'unknown'} · MT5 build {device.mt5_build??'—'}</small><small>Last heartbeat: {heartbeatAge===null?'Never':heartbeatAge+'s ago'} · Last telemetry: {device.latest_received_at?new Date(device.latest_received_at).toLocaleString():'None'}</small></div>
+                <div className="device-status"><Pill tone={device.revoked_at?'red':agentOnline?'green':'warn'}>{device.revoked_at?'REVOKED':agentOnline?'AGENT ONLINE':'OFFLINE'}</Pill><Pill tone={!device.revoked_at&&device.terminal_connected?'green':'neutral'}>{device.terminal_connected&&!device.revoked_at?'MT5 CONNECTED':'MT5 NOT CONFIRMED'}</Pill></div>
+                <button className="btn danger" disabled={!!device.revoked_at||deviceBusy===device.id} onClick={()=>void revokeDevice(device.id,device.device_name)}>{deviceBusy===device.id?'Revoking…':'Revoke token'}</button>
+              </div>;
+            })}
+            {deviceMessage&&<p className="job-message">{deviceMessage}</p>}
+            <p className="muted small">Agent online means a heartbeat was received within 90 seconds. MT5 status comes from the latest telemetry snapshot. Revocation takes effect on the next authenticated request.</p>
+          </>}
+        </Panel>}
         {view==='Settings'&&<Panel title="RISK & EXECUTION SETTINGS" subtitle="Illustrative defaults · no broker effect"><div className="form-grid"><label>Risk per trade (%)<input defaultValue="0.50"/></label><label>Daily loss limit (%)<input defaultValue="2.00"/></label><label>Maximum drawdown (%)<input defaultValue="5.00"/></label><label>Maximum open positions<input defaultValue="3"/></label><label>Maximum total lots<input defaultValue="0.03"/></label><label>Mode<select defaultValue="DEMO"><option>DEMO</option><option disabled>LIVE — locked</option></select></label></div><Pill tone="warn">CONFIGURATION NOT CONNECTED</Pill></Panel>}
         <footer>GHOST V2 <b>0.1.0</b><span>LOCAL-FIRST · RISK GOVERNOR HAS FINAL AUTHORITY</span><span>© 2026 GHOST PROJECT</span></footer>
       </div>
